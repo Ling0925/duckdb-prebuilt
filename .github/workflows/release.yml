@@ -1,0 +1,195 @@
+name: Build DuckDB prebuilt release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: duckdb-prebuilt-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Validate release configuration
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.config.outputs.matrix }}
+      release_tag: ${{ steps.config.outputs.release_tag }}
+      duckdb_version: ${{ steps.config.outputs.duckdb_version }}
+      duckdb_rs_version: ${{ steps.config.outputs.duckdb_rs_version }}
+      rust_toolchain: ${{ steps.config.outputs.rust_toolchain }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Validate pinned versions
+        run: python scripts/verify_config.py
+
+      - name: Export release matrix
+        id: config
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          config = json.loads(Path("version.json").read_text(encoding="utf-8"))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("matrix=" + json.dumps(config["targets"], separators=(",", ":")) + "\n")
+              output.write(f"release_tag={config['releaseTag']}\n")
+              output.write(f"duckdb_version={config['duckdbVersion']}\n")
+              output.write(f"duckdb_rs_version={config['duckdbRsVersion']}\n")
+              output.write(f"rust_toolchain={config['rustToolchain']}\n")
+          PY
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ needs.prepare.outputs.rust_toolchain }}
+
+      - name: Build bundled DuckDB once
+        shell: bash
+        run: |
+          cargo build \
+            --manifest-path builder/Cargo.toml \
+            --release \
+            --target-dir "$GITHUB_WORKSPACE/target-prebuilt"
+
+      - name: Run bundled builder verification
+        shell: bash
+        run: |
+          cargo run \
+            --manifest-path builder/Cargo.toml \
+            --release \
+            --target-dir "$GITHUB_WORKSPACE/target-prebuilt"
+
+      - name: Stage normalized static library
+        shell: bash
+        run: |
+          python scripts/stage.py \
+            --target-dir "$GITHUB_WORKSPACE/target-prebuilt" \
+            --platform "${{ matrix.platform }}" \
+            --output "$GITHUB_WORKSPACE/stage"
+          python -m json.tool "$GITHUB_WORKSPACE/stage/metadata.json"
+
+      - name: Verify non-bundled duckdb-rs linking
+        shell: bash
+        env:
+          DUCKDB_LIB_DIR: ${{ github.workspace }}/stage/lib
+          DUCKDB_INCLUDE_DIR: ${{ github.workspace }}/stage/include
+          DUCKDB_STATIC: "1"
+        run: |
+          cargo run \
+            --manifest-path smoke/Cargo.toml \
+            --release \
+            --target-dir "$GITHUB_WORKSPACE/target-smoke"
+
+      - name: Package platform archive
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          python scripts/package.py \
+            --stage "$GITHUB_WORKSPACE/stage" \
+            --output "$GITHUB_WORKSPACE/dist/${{ matrix.archive }}"
+
+      - name: Upload platform archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: duckdb-prebuilt-${{ matrix.platform }}
+          path: dist/${{ matrix.archive }}
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish verified release
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+      DUCKDB_VERSION: ${{ needs.prepare.outputs.duckdb_version }}
+      DUCKDB_RS_VERSION: ${{ needs.prepare.outputs.duckdb_rs_version }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Download platform archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: duckdb-prebuilt-*
+          path: release
+          merge-multiple: true
+
+      - name: Generate release manifest and checksums
+        run: |
+          python scripts/build_release_manifest.py --directory release
+          cat release/SHA256SUMS
+          sha256sum --check release/SHA256SUMS
+
+      - name: Ensure release tag is new
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Release $RELEASE_TAG already exists. Bump buildRevision before rebuilding."
+            exit 1
+          fi
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > release-notes.md <<EOF
+          Precompiled DuckDB ${DUCKDB_VERSION} static libraries for AnyDatas.
+
+          - duckdb-rs: ${DUCKDB_RS_VERSION}
+          - native build path: duckdb-rs bundled source + core_functions
+          - Windows: MSVC x64 with static CRT
+          - verification: each platform is relinked and executed through duckdb-rs without the bundled feature before publishing
+
+          Consumers should verify downloads against duckdb-prebuilt-manifest.json or SHA256SUMS.
+          EOF
+
+      - name: Publish GitHub Release
+        shell: bash
+        run: |
+          gh release create "$RELEASE_TAG" \
+            release/* \
+            --target "$GITHUB_SHA" \
+            --title "DuckDB ${DUCKDB_VERSION} prebuilt for AnyDatas" \
+            --notes-file release-notes.md
