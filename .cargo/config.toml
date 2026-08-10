@@ -1,0 +1,5 @@
+[target.x86_64-pc-windows-msvc]
+# Keep the prebuilt native archive compatible with AnyDatas' self-contained
+# Windows server binary. cc-rs observes the crt-static target feature and
+# compiles bundled DuckDB C++ with /MT instead of the dynamic MSVC runtime.
+rustflags = ["-C", "target-feature=+crt-static"]
