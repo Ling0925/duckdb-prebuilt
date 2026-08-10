@@ -161,7 +161,7 @@ jobs:
         run: |
           python scripts/build_release_manifest.py --directory release
           cat release/SHA256SUMS
-          sha256sum --check release/SHA256SUMS
+          (cd release && sha256sum --check SHA256SUMS)
 
       - name: Ensure release tag is new
         shell: bash
