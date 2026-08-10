@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "duckdbVersion": "1.5.4",
+  "duckdbRsVersion": "1.10504.0",
+  "rustToolchain": "1.97.0",
+  "buildRevision": 1,
+  "releaseTag": "duckdb-v1.5.4-anydatas.1",
+  "duckdbRsFeatures": [
+    "bundled",
+    "chrono",
+    "serde_json"
+  ],
+  "nativeFeatures": [
+    "core_functions"
+  ],
+  "windowsCrt": "static",
+  "targets": [
+    {
+      "platform": "linux-x64",
+      "runner": "ubuntu-22.04",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "archive": "duckdb-static-v1.5.4-linux-x64.zip",
+      "library": "libduckdb_static.a",
+      "linkLibraries": ["stdc++", "m", "dl", "pthread"]
+    },
+    {
+      "platform": "windows-x64-msvc-static-crt",
+      "runner": "windows-2025",
+      "targetTriple": "x86_64-pc-windows-msvc",
+      "archive": "duckdb-static-v1.5.4-windows-x64-msvc-static-crt.zip",
+      "library": "duckdb_static.lib",
+      "linkLibraries": ["ws2_32", "rstrtmgr", "bcrypt"]
+    },
+    {
+      "platform": "macos-arm64",
+      "runner": "macos-15",
+      "targetTriple": "aarch64-apple-darwin",
+      "archive": "duckdb-static-v1.5.4-macos-arm64.zip",
+      "library": "libduckdb_static.a",
+      "linkLibraries": ["c++"]
+    },
+    {
+      "platform": "macos-x64",
+      "runner": "macos-15-intel",
+      "targetTriple": "x86_64-apple-darwin",
+      "archive": "duckdb-static-v1.5.4-macos-x64.zip",
+      "library": "libduckdb_static.a",
+      "linkLibraries": ["c++"]
+    }
+  ]
+}
